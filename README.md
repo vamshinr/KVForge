@@ -21,18 +21,7 @@ Modern LLM inference is dominated by a small set of kernels: attention (paged or
 
 ## Headline results
 
-Measured on a single NVIDIA L4 (24GB), TinyLlama-1.1B, FP16, batch=1, context=2048.
-
-| Kernel       | PyTorch eager | torch.compile | KVForge (Triton) | Speedup vs eager | % of peak BW |
-|--------------|---------------|---------------|-------------------|------------------|--------------|
-| RMSNorm      | 142 µs        | 99 µs         | **39 µs**         | **3.65×**        | 78%          |
-| RoPE         | 211 µs        | 107 µs        | **84 µs**         | **2.51×**        | 71%          |
-| Fused Softmax| 270 µs        | 330 µs        | **96 µs**         | **2.82×**        | 81%          |
-| Decode attn  | 1.82 ms       | 1.41 ms       | **0.94 ms**       | **1.94×**        | 68%          |
-
-**End-to-end:** 1.38× decode throughput improvement on TinyLlama-1.1B at context=2048.
-
-> Numbers above are from the included benchmark suite. Re-run with `python -m kvforge.bench --model tinyllama --gpu auto`. See [BENCHMARKS.md](docs/BENCHMARKS.md) for full methodology, hardware variation, and correctness validation.
+Measurements are next steps. We saw promising results on a local PC, and will update this section once we run on the hardware.
 
 ---
 
