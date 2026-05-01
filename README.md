@@ -4,18 +4,18 @@
 
 KVForge profiles a real LLM end-to-end, ranks inference-specific kernels by their contribution to total latency (Amdahl's law), and runs an iterative search loop that generates optimized Triton implementations gated by a five-stage correctness harness. Built to study where production LLM inference actually spends its time — and how to claw it back.
 
-> **Status:** Research / portfolio project. Targets single-GPU inference of decoder-only transformers. Not a production serving system.
+> **Status:** Research project. Targets single-GPU inference of decoder-only transformers. Not a production serving system.
 
 ---
 
 ## Why this exists
 
-Modern LLM inference is dominated by a small set of kernels: attention (paged or flash), RMSNorm, RoPE, fused softmax, and matmul. Vendor libraries cover matmul well, but the long tail of memory-bound kernels — and their interaction with KV cache layout — leaves significant performance on the table. Most existing kernel-search work (Korch, AutoKernel, KernelBench) treats kernels in isolation. KVForge instead:
+Modern LLM inference is dominated by a small set of kernels: attention (paged or flash), RMSNorm, RoPE, fused softmax, and matmul. Vendor libraries cover matmul well, but the long tail of memory-bound kernels and their interaction with KV cache layout leaves significant performance on the table. Most existing kernel-search work (Korch, AutoKernel, KernelBench) treats kernels in isolation. KVForge instead:
 
 1. **Starts from a real model** (TinyLlama-1.1B or Qwen2-0.5B) and profiles it with `torch.profiler` to get the actual kernel mix.
 2. **Ranks kernels by Amdahl impact** so optimization effort goes where it compounds.
 3. **Runs an iterative agent-style loop** (edit → correctness check → benchmark → keep/revert) over Triton candidates.
-4. **Measures KV-cache-aware metrics** — prefill TTFT, decode tokens/sec, KV cache memory pressure under varying context lengths.
+4. **Measures KV-cache-aware metrics**: prefill TTFT, decode tokens/sec, KV cache memory pressure under varying context lengths.
 
 ---
 
