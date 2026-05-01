@@ -21,42 +21,17 @@ Modern LLM inference is dominated by a small set of kernels: attention (paged or
 
 ## Headline results
 
-Measurements are next steps. We saw promising results on a local PC, and will update this section once we run on the hardware.
+Measurements are next steps. Will update this section with results once ran on the hardware.
 
 ---
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Phase A: Profile                                               │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │ Real LLM     │ -> │ torch.       │ -> │ Per-kernel   │       │
-│  │ (TinyLlama)  │    │ profiler     │    │ time table   │       │
-│  └──────────────┘    └──────────────┘    └──────┬───────┘       │
-│                                                  │               │
-│                                          ┌───────▼───────┐       │
-│                                          │ Amdahl ranker │       │
-│                                          └───────┬───────┘       │
-└──────────────────────────────────────────────────┼───────────────┘
-                                                   │
-┌──────────────────────────────────────────────────▼───────────────┐
-│  Phase B: Search loop (per kernel)                               │
-│                                                                  │
-│   ┌──────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────┐  │
-│   │ Candidate│->│  5-stage     │->│  Bench       │->│ keep /  │  │
-│   │ generator│  │  correctness │  │  vs baseline │  │ revert  │  │
-│   └────▲─────┘  └──────────────┘  └──────────────┘  └────┬────┘  │
-│        │                                                 │       │
-│        └─────────────────  history + roofline  ──────────┘       │
-└──────────────────────────────────────────────────────────────────┘
-                                                   │
-┌──────────────────────────────────────────────────▼───────────────┐
-│  Phase C: End-to-end verification                                │
-│  Replace nn.Module ops with optimized kernels, re-measure        │
-│  TTFT, decode tokens/sec, output equivalence (cosine sim > 0.99) │
-└──────────────────────────────────────────────────────────────────┘
-```
+KVForge operates in three main phases:
+
+1. **Profile**: Runs a real LLM (e.g., TinyLlama) with `torch.profiler` and ranks kernels by their contribution to end-to-end latency.
+2. **Optimize**: For each bottleneck kernel, runs an iterative search loop that generates and benchmarks Triton candidates, gated by a correctness harness.
+3. **Verify**: Replaces operations in the original model with the optimized kernels to verify end-to-end speedups and output equivalence.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component-by-component details.
 
@@ -130,4 +105,4 @@ Apache 2.0. See [LICENSE](LICENSE).
 
 ## Author
 
-Vamshi Nagireddy — [LinkedIn](https://linkedin.com/in/vamshinr) · [GitHub](https://github.com/vamshinr) · [Blog](https://medium.com/@vamshire)
+Vamshi Nagireddy [LinkedIn](https://linkedin.com/in/vamshinr) [GitHub](https://github.com/vamshinr) [Blog](https://medium.com/@vamshire)
