@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kvforge"
+version = "0.1.0"
+description = "Profile-guided kernel optimization for LLM inference"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Vamshi Nagireddy"}]
+keywords = ["llm", "inference", "triton", "cuda", "kernel-optimization", "kv-cache"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.1.0",
+    "numpy>=1.24",
+    "tabulate>=0.9",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+triton = ["triton>=2.2.0"]
+hf = ["transformers>=4.40", "accelerate>=0.30"]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "matplotlib>=3.8",
+]
+all = ["kvforge[triton,hf,dev]"]
+
+[project.scripts]
+kvforge-profile = "kvforge.profiler.cli:main"
+kvforge-optimize = "kvforge.optimizer.cli:main"
+kvforge-bench = "kvforge.bench.cli:main"
+
+[project.urls]
+Repository = "https://github.com/vamshinr/kvforge"
+Issues = "https://github.com/vamshinr/kvforge/issues"
+
+[tool.setuptools.packages.find]
+include = ["kvforge*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501", "N806"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --strict-markers"
+markers = [
+    "gpu: requires CUDA GPU",
+    "slow: takes > 10 seconds",
+]
