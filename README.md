@@ -2,7 +2,7 @@
 
 **Profile-guided kernel optimization for LLM inference.**
 
-KVForge profiles a real LLM end-to-end, ranks inference-specific kernels by their contribution to total latency (Amdahl's law), and runs an iterative search loop that generates optimized Triton implementations gated by a five-stage correctness harness. Built to study where production LLM inference actually spends its time — and how to claw it back.
+KVForge profiles a real LLM end-to-end, ranks inference-specific kernels by their contribution to total latency (Amdahl's law), and runs an iterative search loop that generates optimized Triton implementations gated by a five-stage correctness harness. Built to study where production LLM inference actually spends its time and how to claw it back.
 
 > **Status:** Research project. Targets single-GPU inference of decoder-only transformers. Not a production serving system.
 
