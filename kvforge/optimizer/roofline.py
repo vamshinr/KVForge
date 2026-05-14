@@ -6,7 +6,7 @@ to-bandwidth ratio (the "ridge point"). This determines which optimization
 tier the search loop should pursue:
 
   - Memory-bound  → focus on reducing HBM traffic (fusion, vectorized loads).
-  - Compute-bound → focus on tile sizes, tensor core utilization, math precision.
+  - Compute-bound → focus on tile sizes, matrix-core utilization, math precision.
 
 A kernel achieves "good" performance when its measured throughput is close
 to the relevant roof:
@@ -104,7 +104,7 @@ class RooflineCalculator:
                 tiers.append("Tier 3 — fuse with adjacent ops to amortize HBM round-trips")
         else:  # compute-bound
             tiers.append("Tier 1 — tile dim sweep with focus on 128×128 / 256×128 variants")
-            tiers.append("Tier 4 — split-K, persistent kernels, tensor-core instruction selection")
+            tiers.append("Tier 4 — split-K, persistent kernels, matrix-core (MFMA) instruction selection")
             if result.pct_of_peak < 0.5:
                 tiers.append("Tier 3 — accumulator precision (TF32 / FP16+FP32 mixed)")
 

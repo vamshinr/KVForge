@@ -70,7 +70,7 @@ def main() -> int:
     print(f"Hardware: {gpu.name}  triton={has_triton()}")
     if not has_triton():
         print("WARNING: Triton unavailable; the 'kvforge' column will fall back to "
-              "the eager reference. Run on a CUDA + Triton host for meaningful numbers.")
+              "the eager reference. Run on a ROCm + Triton host for meaningful numbers.")
 
     dtype_map = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -131,14 +131,22 @@ def main() -> int:
         kvf = r["kvforge"]["runtime_us"] if r["kvforge"] else None
         roof = r["kvforge"]["roofline"] if r["kvforge"] else None
         pct = roof["pct_of_peak"] * 100 if roof else None
-        lines.append(
-            f"| {r['kernel']} | {'x'.join(str(s) for s in r['shape'])} | {r['dtype_name']} | "
-            f"{eager:.1f} | {comp:.1f if comp else 0} | {kvf:.1f} | "
-            f"{r['speedup_eager']:.2f}× | "
-            f"{(r['speedup_compile'] or 0):.2f}× | "
-            f"{pct:.0f}%" if pct is not None else "-"
-            + " |"
-        )
+
+        def _fmt(v, suffix=""):
+            return f"{v:.1f}{suffix}" if v is not None else "-"
+
+        cells = [
+            r["kernel"],
+            "x".join(str(s) for s in r["shape"]),
+            r["dtype_name"],
+            _fmt(eager),
+            _fmt(comp),
+            _fmt(kvf),
+            f"{r['speedup_eager']:.2f}×" if r["speedup_eager"] else "-",
+            f"{r['speedup_compile']:.2f}×" if r["speedup_compile"] else "-",
+            f"{pct:.0f}%" if pct is not None else "-",
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
     md_path.write_text("\n".join(lines))
     print(f"wrote {md_path}")
     return 0

@@ -1,10 +1,10 @@
 """Kernel name classification.
 
 Maps the noisy kernel names emitted by `torch.profiler` to a small set of
-canonical operation types. Vendor names vary widely (cuBLAS GEMM has dozens
-of variants, ATen kernels are templated, Triton-compiled kernels embed hash
-suffixes), so the classifier uses ordered substring matching with the most
-specific patterns first.
+canonical operation types. BLAS kernels expose many variants (rocBLAS /
+hipBLAS / Composable Kernel, ATen templated decompositions, Triton-compiled
+kernels with hash suffixes), so the classifier uses ordered substring
+matching with the most specific patterns first.
 """
 
 from __future__ import annotations
@@ -68,8 +68,10 @@ _PATTERNS: list[tuple[OpType, list[re.Pattern[str]]]] = [
         re.compile(r"\bmm\b", re.I),
         re.compile(r"\bbmm\b", re.I),
         re.compile(r"linear", re.I),
-        re.compile(r"cublas", re.I),
-        re.compile(r"cutlass", re.I),
+        re.compile(r"rocblas", re.I),
+        re.compile(r"hipblas", re.I),
+        re.compile(r"composable_kernel", re.I),
+        re.compile(r"\bck_", re.I),
         re.compile(r"addmm", re.I),
     ]),
     (OpType.EMBEDDING, [

@@ -1,7 +1,8 @@
 """Numerical correctness tests for KVForge kernels.
 
-These tests run on CPU (eager fallback) by default and on GPU when CUDA is
-available. They are dtype-aware: fp16/bf16 use looser tolerances than fp32.
+These tests run on CPU (eager fallback) by default and on GPU when a ROCm
+device is available. They are dtype-aware: fp16/bf16 use looser tolerances
+than fp32.
 """
 
 from __future__ import annotations

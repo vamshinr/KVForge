@@ -2,21 +2,21 @@
 
 This document records the major design choices in KVForge and the alternatives that were considered. It exists because in interviews and code review, the question is rarely "what does the code do?" — it's "why did you do it this way?"
 
-## 1. Triton over CUDA C++
+## 1. Triton over HIP / hand-tuned assembly
 
-**Choice:** All optimized kernels are written in Triton. CUDA C++ is not used.
+**Choice:** All optimized kernels are written in Triton. HIP / MFMA assembly is not used.
 
 **Alternatives considered:**
-- CUDA C++ via `torch.utils.cpp_extension.load_inline` (AutoKernel's approach).
+- HIP C++ via `torch.utils.cpp_extension.load_inline` (AutoKernel's approach).
 - A dual-backend system (AutoKernel ships both).
 - Writing in pure Python and relying on `torch.compile` to lower to Triton.
 
 **Reasoning:**
-- Iteration speed dominates absolute peak performance for a search loop. Triton compiles in 1–5s; CUDA C++ takes 30+s. At 40 iterations/hour vs 5/hour, the agent loop converges 8× faster.
-- For memory-bound kernels (RMSNorm, RoPE, softmax) — which is most of what KVForge optimizes — Triton routinely hits 80–95% of cuBLAS-equivalent throughput. The remaining gap doesn't justify the iteration penalty.
+- Iteration speed dominates absolute peak performance for a search loop. Triton compiles in 1–5s; HIP takes 30+s. At 40 iterations/hour vs 5/hour, the agent loop converges 8× faster.
+- For memory-bound kernels (RMSNorm, RoPE, softmax) — which is most of what KVForge optimizes — Triton routinely hits 80–95% of vendor-BLAS-equivalent throughput. The remaining gap doesn't justify the iteration penalty.
 - Single backend keeps the codebase auditable. AutoKernel's dual-backend design is impressive but doubles the surface area for bugs.
 
-**Tradeoff:** Compute-bound matmul kernels would benefit from CUDA C++ (direct WMMA control, register-level tuning). KVForge currently delegates matmul to cuBLAS rather than competing with it; a future v2 could add a CUDA C++ backend behind the same kernel interface.
+**Tradeoff:** Compute-bound matmul kernels would benefit from HIP (direct matrix-core MFMA control, register-level tuning). KVForge currently delegates matmul to rocBLAS / Composable Kernel rather than competing with it; a future v2 could add a HIP backend behind the same kernel interface.
 
 ## 2. Static candidate iterator vs LLM-driven generation
 
@@ -25,7 +25,7 @@ This document records the major design choices in KVForge and the alternatives t
 **Alternatives considered:**
 - Wire up Anthropic / OpenAI APIs to generate candidates AutoKernel-style.
 - Use an evolutionary algorithm (KernelFoundry's MAP-Elites approach).
-- Use reinforcement learning (CUDA-L1's contrastive RL).
+- Use reinforcement learning (contrastive RL over candidate diffs).
 
 **Reasoning:**
 - The agent loop's *structure* is what matters and what's interesting to demonstrate. The choice of candidate generator is orthogonal — swap in any of the above and the rest of the framework keeps working.
@@ -58,7 +58,7 @@ This document records the major design choices in KVForge and the alternatives t
 - Use a learned model to predict which tier will yield improvements.
 
 **Reasoning:**
-- The roofline classification is essentially free (~1µs per analysis) and provides a strong prior. Optimizing memory-bound kernels with compute-side techniques (tensor core utilization, accumulator precision) wastes search budget.
+- The roofline classification is essentially free (~1µs per analysis) and provides a strong prior. Optimizing memory-bound kernels with compute-side techniques (matrix-core utilization, accumulator precision) wastes search budget.
 - The playbook is borrowed from AutoKernel and reflects real practitioner knowledge. Encoding it as data (not code) makes it inspectable.
 - A learned model is overkill for a 6-tier playbook. The handful of cases where the heuristic is wrong (e.g., a kernel sitting near the ridge point) can be handled by trying both classifications.
 

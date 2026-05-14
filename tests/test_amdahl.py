@@ -66,13 +66,13 @@ def test_ranker_handles_zero_total_time(ranker: AmdahlRanker) -> None:
 
 def test_ranker_aggregation_collapses_same_op_type(ranker: AmdahlRanker) -> None:
     times = {
-        "cublas_gemm_v1": (50.0, 1),
-        "cublas_gemm_v2": (30.0, 1),
+        "gemm_v1": (50.0, 1),
+        "gemm_v2": (30.0, 1),
         "rmsnorm_kernel": (20.0, 1),
     }
     op_types = {
-        "cublas_gemm_v1": OpType.MATMUL,
-        "cublas_gemm_v2": OpType.MATMUL,
+        "gemm_v1": OpType.MATMUL,
+        "gemm_v2": OpType.MATMUL,
         "rmsnorm_kernel": OpType.RMSNORM,
     }
     entries = ranker.rank(times, op_types)

@@ -1,6 +1,6 @@
 """End-to-end model profiler.
 
-Runs a real forward pass under `torch.profiler` and aggregates per-kernel CUDA
+Runs a real forward pass under `torch.profiler` and aggregates per-kernel GPU
 times. Designed to be deterministic across runs (fixed warmup, fixed iteration
 count, trimmed mean) so the Amdahl ranking is stable.
 """
@@ -71,7 +71,7 @@ class ModelProfiler:
         """
         model.eval()
         # Warmup outside the profiler: triggers Triton/Inductor JIT, allocator
-        # settling, and any one-time cuBLAS handle creation.
+        # settling, and any one-time BLAS handle creation.
         with torch.inference_mode():
             for _ in range(self.warmup_iters):
                 forward_fn(model)
@@ -100,7 +100,7 @@ class ModelProfiler:
         kernel_times: dict[str, list[float]] = defaultdict(list)
         kernel_counts: dict[str, int] = defaultdict(int)
 
-        # `key_averages()` gives one row per unique kernel name with self CUDA
+        # `key_averages()` gives one row per unique kernel name with self GPU
         # time already aggregated across calls. We then divide by measured_iters
         # to get per-iteration times.
         for evt in prof.key_averages():

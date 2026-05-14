@@ -1,11 +1,11 @@
 """Benchmark harness: compares baselines and reports roofline-aware metrics.
 
 Three baselines per kernel:
-  - eager:    pure PyTorch reference (cuBLAS / ATen).
+  - eager:    pure PyTorch reference (rocBLAS / ATen).
   - compile:  `torch.compile(fn, mode='max-autotune')`.
   - kvforge:  the optimized Triton kernel.
 
-Each is timed with CUDA events, 200 iterations, trimmed mean (drop top/bottom
+Each is timed with GPU events, 200 iterations, trimmed mean (drop top/bottom
 10%). Results include throughput and roofline percent-of-peak.
 """
 

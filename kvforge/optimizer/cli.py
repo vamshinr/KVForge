@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     if not has_triton():
         console.print("[yellow]Triton unavailable — running correctness checks only "
                       "(speedup will be 1.0x). Install with `pip install triton` on a "
-                      "CUDA-capable host to benchmark the optimized kernels.[/yellow]")
+                      "ROCm-capable host to benchmark the optimized kernels.[/yellow]")
 
     table = Table(title="KVForge optimization summary")
     table.add_column("Kernel")

@@ -8,7 +8,7 @@ Thanks for your interest. KVForge is a research / portfolio project, but contrib
 git clone https://github.com/vamshinr/kvforge
 cd kvforge
 pip install -e ".[dev]"        # CPU dev environment
-pip install -e ".[triton,dev]" # if you have a CUDA GPU
+pip install -e ".[triton,dev]" # if you have a ROCm GPU
 ```
 
 ## Running tests
@@ -19,7 +19,7 @@ pytest tests/ -v -m "not gpu"     # CPU-only tests
 pytest tests/test_kernels.py -v   # one test file
 ```
 
-GPU-marked tests are auto-skipped when CUDA is unavailable.
+GPU-marked tests are auto-skipped when no GPU is available.
 
 ## Code style
 
@@ -49,7 +49,7 @@ The `CorrectnessHarness` in `kvforge/optimizer/harness.py` will validate your ke
 ## Reporting bugs
 
 Include:
-- Hardware (GPU model, driver version, CUDA version).
+- Hardware (GPU model, ROCm version, driver version).
 - PyTorch and Triton versions (`pip show torch triton`).
 - Minimal reproducer.
 - Expected vs actual output.
@@ -60,7 +60,7 @@ For correctness bugs, the reproducer should ideally be a failing test case in `t
 
 - New inference-relevant kernels (paged attention, fused linear+activation, INT8 GEMM).
 - Better benchmark scripts and visualizations.
-- Hardware support beyond CUDA (Apple Metal via MLX, AMD ROCm via HIP).
+- Hardware support beyond ROCm (Apple Metal via MLX, future accelerator backends).
 - LLM-driven candidate generation (the search loop is ready for it).
 
 ## What's out of scope

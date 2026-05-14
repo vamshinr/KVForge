@@ -6,10 +6,10 @@ from kvforge.profiler.classify import OpType, classify
 
 
 @pytest.mark.parametrize("name,expected", [
-    # cuBLAS / cuDNN matmul variants
-    ("ampere_sgemm_64x64_nn", OpType.MATMUL),
-    ("cublasGemmEx", OpType.MATMUL),
-    ("cutlass_80_tensorop_s16816gemm", OpType.MATMUL),
+    # Matmul variants
+    ("Cijk_Ailk_Bljk_HHS_BH_MT128x128x16", OpType.MATMUL),  # rocBLAS-style
+    ("hipblasGemmEx", OpType.MATMUL),
+    ("composable_kernel_gemm_xdl", OpType.MATMUL),
     ("aten::addmm", OpType.MATMUL),
     ("aten::linear", OpType.MATMUL),
     # Attention
@@ -41,7 +41,7 @@ def test_classify_known_kernels(name: str, expected: OpType) -> None:
 
 def test_classify_is_case_insensitive() -> None:
     assert classify("FLASH_ATTN_FWD") == OpType.ATTENTION
-    assert classify("CUBLAS_GEMM") == OpType.MATMUL
+    assert classify("HIPBLAS_GEMM") == OpType.MATMUL
 
 
 def test_classify_prefers_specific_match() -> None:

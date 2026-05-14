@@ -7,9 +7,9 @@ import torch
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip GPU-marked tests when CUDA is unavailable."""
+    """Auto-skip GPU-marked tests when no GPU is available."""
     if not torch.cuda.is_available():
-        skip_gpu = pytest.mark.skip(reason="requires CUDA GPU")
+        skip_gpu = pytest.mark.skip(reason="requires a ROCm GPU")
         for item in items:
             if "gpu" in item.keywords:
                 item.add_marker(skip_gpu)

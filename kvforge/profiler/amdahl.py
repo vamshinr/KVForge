@@ -101,7 +101,7 @@ class AmdahlRanker:
     ) -> list[KernelEntry]:
         """Collapse multiple kernel entries that share an op_type.
 
-        Useful when many cuBLAS GEMM variants all map to MATMUL — the Amdahl
+        Useful when many GEMM variants all map to MATMUL — the Amdahl
         impact of optimizing "matmul as a class" is larger than any single
         variant.
         """

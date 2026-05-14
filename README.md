@@ -41,7 +41,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component-by-component deta
 
 ```bash
 # Install
-pip install -e ".[dev]"
+pip install -e ".[dev,triton]"
+
+# One-shot demo: hardware report + TinyLlama profile + RMSNorm roofline
+# (~30-90s on an AMD Instinct MI300X / MI250X)
+python scripts/demo.py --context 512 --hidden 2048
 
 # Profile a model and rank its kernels
 python -m kvforge.profile --model tinyllama --context 2048
@@ -54,6 +58,19 @@ python -m kvforge.bench --model tinyllama --compare eager,compile
 
 # Run the test suite
 pytest tests/ -v
+```
+
+### AMD (MI300X / MI250X) notes
+
+KVForge auto-detects AMD Instinct GPUs on ROCm PyTorch builds — `detect_gpu()`
+checks for `torch.version.hip` and falls back to gfx ISA names (`gfx942`,
+`gfx90a`) when the device string is generic. Upstream Triton has supported
+AMD GPUs since 2.2, so the Triton kernels run unchanged. Install with:
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/rocm6.0 torch
+pip install -e ".[dev,triton]"
+python scripts/demo.py
 ```
 
 ---
@@ -75,7 +92,7 @@ pytest tests/ -v
 
 ## Design choices worth flagging
 
-- **Triton over CUDA C++.** Iteration speed matters more than absolute peak performance for this kind of search. Each candidate compiles in ~2 seconds; a CUDA C++ candidate takes 30+. The agent loop runs ~40 experiments/hour on Triton vs ~5/hour on CUDA C++.
+- **Triton over hand-written HIP / assembly.** Iteration speed matters more than absolute peak performance for this kind of search. Each Triton candidate compiles in ~2 seconds; a HIP candidate takes 30+. The agent loop runs ~40 experiments/hour on Triton vs ~5/hour on HIP.
 - **Single-file kernel invariant.** Each candidate touches exactly one kernel file. Diffs stay small, reverts are clean (`git reset --hard`), and regressions are isolated.
 - **Correctness gates *before* throughput.** A 5× speedup on a kernel that produces wrong outputs is worse than useless — it silently corrupts the model. Five stages: smoke test, shape sweep across 8 configs × 3 dtypes, numerical stability under adversarial inputs, determinism (3 runs bitwise identical), non-power-of-2 edges.
 - **Roofline-guided tier selection.** The optimizer tags each kernel as compute-bound or memory-bound, then picks an optimization strategy from a tiered playbook (block sizes → memory access → compute → advanced). This is borrowed from AutoKernel; the novel piece here is applying it to inference-specific kernels with KV cache shape awareness.

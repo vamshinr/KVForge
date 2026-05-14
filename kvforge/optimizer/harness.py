@@ -27,8 +27,8 @@ from typing import Callable
 import torch
 
 
-# Dtype-specific tolerances. Tuned to match cuBLAS/cuDNN's typical drift on
-# medium-sized reductions; adjust per-kernel if a particular op needs tighter
+# Dtype-specific tolerances. Tuned to match typical BLAS / reduction drift on
+# medium-sized inputs; adjust per-kernel if a particular op needs tighter
 # bounds.
 DEFAULT_TOLERANCES: dict[torch.dtype, tuple[float, float]] = {
     torch.float32: (1e-4, 1e-5),   # (atol, rtol)

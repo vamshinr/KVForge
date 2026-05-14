@@ -21,13 +21,13 @@ Three baselines per kernel, three shape regimes per kernel, two dtypes (fp16 and
 
 | Baseline | Code path |
 |---|---|
-| **Eager** | Pure PyTorch reference — `cuBLAS` for matmul, `ATen` decompositions for everything else |
+| **Eager** | Pure PyTorch reference — `rocBLAS` for matmul, `ATen` decompositions for everything else |
 | **`torch.compile`** | `torch.compile(fn, mode='max-autotune')` — TorchInductor generates and tunes its own Triton kernels |
 | **KVForge** | The hand-tuned Triton kernel from `kvforge/kernels/` |
 
 For each (kernel, baseline, shape, dtype) tuple we report:
 
-1. **Wall-clock latency** in microseconds (CUDA event timing, trimmed mean of 200 runs)
+1. **Wall-clock latency** in microseconds (GPU event timing, trimmed mean of 200 runs)
 2. **Speedup vs eager** and **speedup vs `torch.compile`**
 3. **Achieved bandwidth** (GB/s) and **achieved throughput** (TFLOPS)
 4. **Percent of roofline peak** at the kernel's arithmetic intensity
@@ -40,7 +40,7 @@ GPU timing has three failure modes that destroy benchmark validity:
 
 1. **CPU-side measurement**: `time.perf_counter()` measures CPU dispatch, not GPU execution.
 2. **Async kernel launches**: a kernel submitted at T=0 may not start running until T=2µs and finish at T=10µs. Synchronizing at the wrong place gives garbage numbers.
-3. **First-iteration overhead**: kernel JIT compilation, autotuning, and cuBLAS handle setup all hit the first call.
+3. **First-iteration overhead**: kernel JIT compilation, autotuning, and BLAS handle setup all hit the first call.
 
 Our protocol addresses each:
 
@@ -50,10 +50,10 @@ for _ in range(warmup_iters):
     fn()
 torch.cuda.synchronize()
 
-# CUDA events bracket each iteration on-device
+# GPU events bracket each iteration on-device
 timings = []
 for _ in range(bench_iters):
-    start = torch.cuda.Event(enable_timing=True)
+    start = torch.cuda.Event(enable_timing=True)  # ROCm reuses torch.cuda
     end = torch.cuda.Event(enable_timing=True)
     start.record()
     fn()
@@ -90,9 +90,9 @@ A failure in any of these is a bug. We don't report performance for kernels that
 
 ## Hardware tested
 
-The headline numbers in the README are from an NVIDIA L4 (24GB, 300 GB/s, 121 TF FP16). KVForge auto-detects the GPU via `kvforge.hardware.detect_gpu()` and looks up its specs from a built-in database covering H100, A100, L40S, L4, A10, T4, and RTX 3090/4090.
+The headline numbers in the README target an AMD Instinct MI300X (192GB HBM3, 5.3 TB/s, 1307 TF FP16 matrix). KVForge auto-detects the GPU via `kvforge.hardware.detect_gpu()` and looks up its specs from a built-in database covering MI300X, MI300A, MI250X, MI250, and MI210.
 
-Variation across GPUs is significant for memory-bound kernels (most of what we benchmark). On bandwidth-rich H100 (3.3 TB/s), absolute speedups are smaller because the eager baseline is already closer to peak. On bandwidth-limited L4 (300 GB/s), the gap is wider.
+Variation across GPUs is significant for memory-bound kernels (most of what we benchmark). On bandwidth-rich MI300X (5.3 TB/s), absolute speedups are smaller because the eager baseline is already closer to peak. On bandwidth-limited MI210 (1.6 TB/s), the gap is wider.
 
 ## Reproducing the headline numbers
 
@@ -119,15 +119,15 @@ The numbers will differ from the README depending on your GPU. The relative spee
 
 If you're seeing wildly different numbers from the README:
 
-- **Power state.** GPUs throttle when warm. Check `nvidia-smi` clocks during the run; if they're below boost, run with `nvidia-smi -lgc <max>` to lock.
-- **PCIe vs NVLink.** Multi-GPU systems may schedule the workload across the wrong device. Set `CUDA_VISIBLE_DEVICES=0` explicitly.
-- **CUDA / Triton versions.** Triton 2.2 vs 3.0 produce different kernel code for the same source. Pin versions in the install.
+- **Power state.** GPUs throttle when warm. Check `rocm-smi` clocks during the run; if they're below boost, run with `rocm-smi --setsclk <max>` to lock.
+- **PCIe vs XGMI / Infinity Fabric.** Multi-GPU systems may schedule the workload across the wrong device. Set `HIP_VISIBLE_DEVICES=0` explicitly.
+- **ROCm / Triton versions.** Triton 2.2 vs 3.0 produce different kernel code for the same source. Pin versions in the install.
 - **Background load.** Other processes on the same GPU compete for SMs. Run on an idle device.
 
 ## Limitations
 
 - **No multi-GPU benchmarks.** Single-device only.
-- **No long-context benchmarks.** Context lengths beyond 4096 push KV cache off-device on smaller GPUs and the bottleneck shifts to PCIe.
+- **No long-context benchmarks.** Context lengths beyond 4096 push KV cache off-device on smaller GPUs and the bottleneck shifts to host transfer.
 - **No quantized baselines.** INT8 / INT4 / FP4 inference is increasingly common in production but isn't covered here.
 
 These are all reasonable v2 directions but not in scope for the current release.

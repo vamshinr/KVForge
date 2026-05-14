@@ -18,13 +18,13 @@ Each phase has a single, well-defined responsibility. The phases communicate thr
 
 **Module:** `kvforge.profiler`
 
-The profiler wraps `torch.profiler` to capture per-CUDA-kernel timings while a model runs a real forward pass. Two design choices are worth flagging:
+The profiler wraps `torch.profiler` to capture per-kernel GPU timings while a model runs a real forward pass. Two design choices are worth flagging:
 
-**Per-iteration normalization.** `torch.profiler.key_averages()` returns cumulative time across the whole profiling window. We divide by the configured `measured_iters` to get per-iteration time, which is what matters for Amdahl analysis. The `warmup_iters` are explicitly excluded — JIT compilation, autotuning, and one-time cuBLAS handle creation all happen during warmup and would skew rankings.
+**Per-iteration normalization.** `torch.profiler.key_averages()` returns cumulative time across the whole profiling window. We divide by the configured `measured_iters` to get per-iteration time, which is what matters for Amdahl analysis. The `warmup_iters` are explicitly excluded — JIT compilation, autotuning, and one-time BLAS handle creation all happen during warmup and would skew rankings.
 
-**Op-type aggregation.** Profilers expose dozens of cuBLAS GEMM variants (`ampere_sgemm_64x64_nn`, `cublasGemmEx`, etc.) that all do the same thing. The `AmdahlRanker` collapses these into op-type buckets via the classifier in `kvforge.profiler.classify`. This matters because optimizing "all matmul kernels" is a single engineering project, not 12 separate ones.
+**Op-type aggregation.** Profilers expose many GEMM variants (rocBLAS / hipBLAS / Composable Kernel tilings, ATen templated decompositions, etc.) that all do the same thing. The `AmdahlRanker` collapses these into op-type buckets via the classifier in `kvforge.profiler.classify`. This matters because optimizing "all matmul kernels" is a single engineering project, not 12 separate ones.
 
-**Caveat:** The profiler is currently CUDA-only. On Apple Silicon or Intel GPU, it returns an empty kernel table (the CLI handles this gracefully). Adding MPS / SYCL profiling is straightforward but out of scope for v1.
+**Caveat:** The profiler is currently ROCm-only. On Apple Silicon or other backends it returns an empty kernel table (the CLI handles this gracefully). Adding MPS / SYCL profiling is straightforward but out of scope for v1.
 
 ---
 
@@ -64,7 +64,7 @@ Five stages, ordered cheapest first so failures abort early:
 
 The shape sweep is the most important stage: it runs each candidate across 8+ shapes × 3 dtypes (24+ configurations). A kernel that works on `[16, 4096]` but breaks on `[7, 4097]` is broken — and that bug class is by far the most common failure mode in hand-written reduction kernels.
 
-**Tolerance handling.** Different dtypes accumulate noise differently. The default tolerances (`fp32: 1e-4 atol`, `fp16: 1e-2 atol`, `bf16: 2e-2 atol`) match what cuBLAS/cuDNN typically achieve. They're conservative enough that real bugs always trip, loose enough that ordering-dependent reduction noise doesn't.
+**Tolerance handling.** Different dtypes accumulate noise differently. The default tolerances (`fp32: 1e-4 atol`, `fp16: 1e-2 atol`, `bf16: 2e-2 atol`) match what production BLAS / reduction kernels typically achieve. They're conservative enough that real bugs always trip, loose enough that ordering-dependent reduction noise doesn't.
 
 ### Search loop (`search.py`)
 
@@ -86,7 +86,7 @@ AI < ridge → memory-bound, optimize HBM traffic
 AI > ridge → compute-bound, optimize FLOPS utilization
 ```
 
-For an L4 GPU: `ridge ≈ 121 TF / 300 GB/s = 403 FLOP/byte`. RMSNorm has AI ≈ 1.5 FLOP/byte, so it's deep in memory-bound territory and 80% of peak bandwidth is the realistic ceiling. Matmul has AI > 1000 FLOP/byte — compute-bound, ceiling is peak FLOPS.
+For an MI300X: `ridge ≈ 1307 TF / 5325 GB/s ≈ 245 FLOP/byte`. RMSNorm has AI ≈ 1.5 FLOP/byte, so it's deep in memory-bound territory and 80% of peak bandwidth is the realistic ceiling. Matmul has AI > 1000 FLOP/byte — compute-bound, ceiling is peak FLOPS.
 
 `recommend_tier()` translates roofline classification into a textual playbook entry. A real agent loop would feed these as prompts; in this static framework they appear in CLI output to help the user understand *why* a kernel is slow.
 
@@ -102,14 +102,14 @@ Each kernel is a self-contained module with three components:
 2. **`<kernel>()`** — public API. Falls back to reference if Triton is unavailable or input is on CPU. This is what user code calls.
 3. **`<kernel>_bytes()` / `<kernel>_flops()`** — roofline metadata. Used by the bench harness to compute percent-of-peak.
 
-### Why Triton (and not CUDA C++)?
+### Why Triton (and not HIP / assembly)?
 
 KVForge targets fast iteration over absolute peak performance:
 
-- Triton compile time: 1–5 seconds. CUDA C++ via `load_inline`: 30+ seconds.
-- The agent loop runs ~40 iterations/hour on Triton vs ~5/hour on CUDA C++.
-- For memory-bound kernels (RMSNorm, RoPE, softmax), Triton routinely hits 80–95% of cuBLAS-equivalent throughput. The remaining gap isn't worth the iteration penalty.
-- For compute-bound kernels (matmul), CUDA C++ has clear advantages — direct WMMA access, register-level control. KVForge's matmul story is "use cuBLAS" for v1; future work could add a CUDA C++ backend behind the same interface.
+- Triton compile time: 1–5 seconds. HIP via `load_inline`: 30+ seconds.
+- The agent loop runs ~40 iterations/hour on Triton vs ~5/hour on HIP.
+- For memory-bound kernels (RMSNorm, RoPE, softmax), Triton routinely hits 80–95% of vendor-BLAS-equivalent throughput. The remaining gap isn't worth the iteration penalty.
+- For compute-bound kernels (matmul), HIP / hand-tuned MFMA has clear advantages — direct matrix-core control, register-level tuning. KVForge's matmul story is "use rocBLAS / Composable Kernel" for v1; future work could add a HIP backend behind the same interface.
 
 ### Single-file invariant
 
@@ -123,7 +123,7 @@ The benchmark harness (`kvforge.bench.harness`) compares three baselines:
 
 | Baseline | Implementation | Why it matters |
 |---|---|---|
-| Eager | PyTorch native (cuBLAS / ATen) | Lower bound — what users get out of the box |
+| Eager | PyTorch native (rocBLAS / ATen) | Lower bound — what users get out of the box |
 | `torch.compile` | TorchInductor with `max-autotune` | Strong baseline — Inductor generates Triton kernels too |
 | KVForge | Our hand-tuned Triton | The contribution |
 
@@ -133,7 +133,7 @@ Beating eager is easy. Beating `torch.compile` is the meaningful test — Induct
 2. Inductor's autotuning has a wall-clock budget per kernel. Ours can spend hours on one kernel.
 3. Some patterns (like the RoPE rotation) don't fuse cleanly under Inductor's pattern matcher.
 
-The harness uses CUDA events (not `time.perf_counter`) for sub-microsecond accuracy and trimmed-mean aggregation (drop top/bottom 10%) to absorb scheduling noise.
+The harness uses GPU events (not `time.perf_counter`) for sub-microsecond accuracy and trimmed-mean aggregation (drop top/bottom 10%) to absorb scheduling noise.
 
 ---
 
@@ -154,8 +154,8 @@ These omissions are noted up-front in the README so reviewers don't have to disc
 
 See [BENCHMARKS.md](BENCHMARKS.md) for the full benchmark protocol, including:
 
-- Hardware tested (L4, A10, RTX 3090)
-- CUDA event timing methodology
+- Hardware tested (AMD Instinct MI300X / MI250X)
+- GPU event timing methodology
 - Trimmed-mean aggregation
 - Correctness validation procedure (`pytest tests/ -v`)
 - How to reproduce the headline numbers
