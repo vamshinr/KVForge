@@ -73,6 +73,7 @@ _PATTERNS: list[tuple[OpType, list[re.Pattern[str]]]] = [
         re.compile(r"composable_kernel", re.I),
         re.compile(r"\bck_", re.I),
         re.compile(r"addmm", re.I),
+        re.compile(r"^Cijk_"),  # rocBLAS Tensile-generated GEMM kernels
     ]),
     (OpType.EMBEDDING, [
         re.compile(r"embedding", re.I),
