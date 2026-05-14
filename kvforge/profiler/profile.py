@@ -104,10 +104,13 @@ class ModelProfiler:
         # time already aggregated across calls. We then divide by measured_iters
         # to get per-iteration times.
         for evt in prof.key_averages():
-            # `cuda_time_total` is the post-2.1 attribute; older versions used
-            # `cuda_time`. Handle both gracefully.
+            # PyTorch 2.5+ renamed cuda_time_total -> device_time_total to be
+            # device-agnostic (matters on ROCm). Try the new names first, then
+            # fall back to the legacy ones for older PyTorch builds.
             cuda_us = (
-                getattr(evt, "self_cuda_time_total", None)
+                getattr(evt, "self_device_time_total", None)
+                or getattr(evt, "device_time_total", None)
+                or getattr(evt, "self_cuda_time_total", None)
                 or getattr(evt, "cuda_time_total", None)
                 or 0
             )
