@@ -1,133 +1,149 @@
 # Benchmarks: Methodology and Results
 
-This document describes how KVForge's benchmarks are run, what they measure, and how to reproduce them on your own hardware.
+This document describes how slipstream's benchmarks are run, what they measure, and how to reproduce them.
 
-## TL;DR
+> **Status:** Methodology is locked in; numbers land after the Triton kernels
+> and Llama-3 forward path finish (see [PLAN.md](PLAN.md), Phases 2–3).
+> Until then, this doc is the protocol reference, not a results page.
+
+---
+
+## TL;DR — how to run
 
 ```bash
-# Run the full per-kernel benchmark suite
-python -m kvforge.bench --kernels rmsnorm,rope,softmax --dtype fp16 --iters 200
+# Full cross-baseline production grid (Llama-3-8B decode, MI300X)
+slipstream-bench --baselines all --workload production --out results.json
 
-# Run a longer, more statistically stable run
-python benchmarks/run_all.py --iters 500 --output benchmarks/results/
+# Smoke grid (a few shapes) — for development
+slipstream-bench --baselines slipstream vllm-rocm --workload smoke
 
-# Plot roofline visualization
-python benchmarks/plot_roofline.py --input benchmarks/results/
+# Just one baseline against another
+slipstream-bench --baselines slipstream flash-attention-rocm --workload smoke
 ```
+
+All baselines write `DecodeResult` rows to `results.json`. The plotting/
+table-generation utilities are in `slipstream/bench/report.py` (lands with
+the first published number).
+
+---
 
 ## What we measure
 
-Three baselines per kernel, three shape regimes per kernel, two dtypes (fp16 and bf16):
-
-| Baseline | Code path |
+| Metric | Definition |
 |---|---|
-| **Eager** | Pure PyTorch reference — `rocBLAS` for matmul, `ATen` decompositions for everything else |
-| **`torch.compile`** | `torch.compile(fn, mode='max-autotune')` — TorchInductor generates and tunes its own Triton kernels |
-| **KVForge** | The hand-tuned Triton kernel from `kvforge/kernels/` |
+| **tokens/sec** | Total tokens generated (across the batch) per wall-clock second of decode time |
+| **ms/token p50** | Median per-token latency, measured at the engine level (one decode step from input to next-token id) |
+| **ms/token p99** | 99th percentile — captures tail latency relevant for serving SLOs |
+| **TTFT p50** | Median time-to-first-token (prefill latency) |
+| **HBM BW %** | Measured DRAM bytes moved / peak HBM bandwidth (5325 GB/s on MI300X) |
+| **MFMA %** | Measured FLOPS / peak FP16 or FP8 MFMA throughput |
 
-For each (kernel, baseline, shape, dtype) tuple we report:
+The kernel-level harness (`bench/harness.py`) reports the same plus
+`arithmetic_intensity` and the roofline classification ("memory-bound" /
+"compute-bound") via `slipstream.roofline`.
 
-1. **Wall-clock latency** in microseconds (GPU event timing, trimmed mean of 200 runs)
-2. **Speedup vs eager** and **speedup vs `torch.compile`**
-3. **Achieved bandwidth** (GB/s) and **achieved throughput** (TFLOPS)
-4. **Percent of roofline peak** at the kernel's arithmetic intensity
+---
 
-The percent-of-peak number is the most honest measurement. A 5× speedup vs eager that only hits 30% of bandwidth peak means there's still 3× left on the table; a 2× speedup that hits 85% of peak is essentially done.
+## Timing protocol
 
-## Timing methodology
+- **GPU events** (`torch.cuda.Event(enable_timing=True)`), not
+  `time.perf_counter`. Sub-microsecond accuracy, no host-side noise.
+- **Warmup:** 10 iterations discarded. Captures first-call JIT,
+  hipBLASLt handle creation, Triton compile, autotune lookup.
+- **Measurement:** 30 iterations.
+- **Trim:** top and bottom 10% dropped before mean.
+- **Synchronization:** `torch.cuda.synchronize()` between iterations.
 
-GPU timing has three failure modes that destroy benchmark validity:
+---
 
-1. **CPU-side measurement**: `time.perf_counter()` measures CPU dispatch, not GPU execution.
-2. **Async kernel launches**: a kernel submitted at T=0 may not start running until T=2µs and finish at T=10µs. Synchronizing at the wrong place gives garbage numbers.
-3. **First-iteration overhead**: kernel JIT compilation, autotuning, and BLAS handle setup all hit the first call.
+## Workload grid (`--workload production`)
 
-Our protocol addresses each:
+| Knob | Values |
+|---|---|
+| Model | `meta-llama/Meta-Llama-3-8B` |
+| Batch size | 1, 8, 32, 128 |
+| Prompt length | 512, 2048, 8192 |
+| Decode steps | 128 (enough to amortize first-token cost) |
+| dtype | fp16 |
+| FP8 KV | {off, on} for each shape |
 
-```python
-# Warmup outside timing window
-for _ in range(warmup_iters):
-    fn()
-torch.cuda.synchronize()
+That's 4 × 3 × 2 = 24 workloads × N baselines.
 
-# GPU events bracket each iteration on-device
-timings = []
-for _ in range(bench_iters):
-    start = torch.cuda.Event(enable_timing=True)  # ROCm reuses torch.cuda
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    fn()
-    end.record()
-    end.synchronize()
-    timings.append(start.elapsed_time(end))
+`--workload smoke` is two workloads for quick development iteration.
 
-# Trimmed mean — drop top/bottom 10% for noise robustness
-timings.sort()
-trim = max(1, int(len(timings) * 0.1))
-median = mean(timings[trim:-trim])
+---
+
+## Baseline pin points
+
+Each baseline is anchored to a specific upstream version so numbers stay
+comparable across rebuilds:
+
+| Baseline | Pin |
+|---|---|
+| vLLM-ROCm | `v0.6.5` (configurable via `SLIPSTREAM_VLLM_PIN`) |
+| Flash-Attention-ROCm | latest ROCm wheel from upstream FA repo |
+| hipBLASLt | bundled with the ROCm install (system) |
+| torch.compile | `torch>=2.4` |
+
+Each adapter records its observed version into `DecodeResult.metadata` so
+results are auditable.
+
+---
+
+## Reproduction requirements
+
+A number is "publishable" only when:
+
+1. The exact `slipstream-bench` command and seed are documented.
+2. The result is reproducible to within ±5% across three independent runs.
+3. The autotune cache file in use is committed to the repo.
+4. Baseline version pins are recorded.
+
+Lossy speedup claims ("seems faster") never appear in the README or this doc.
+
+---
+
+## Result format
+
+`results.json` is a list of `DecodeResult` dicts:
+
+```json
+[
+  {
+    "baseline": "slipstream",
+    "input": {
+      "model_id": "meta-llama/Meta-Llama-3-8B",
+      "batch_size": 32, "prompt_len": 2048,
+      "decode_steps": 128, "dtype": "fp16", "fp8_kv": true
+    },
+    "ms_per_token_p50": 4.32, "ms_per_token_p99": 4.91,
+    "tokens_per_sec": 7407.4, "ttft_ms_p50": 38.2,
+    "hbm_bw_gb_s": 4218.0, "measured_tflops": 162.4,
+    "metadata": {"autotune_cache_hits": 31, "kv_blocks_used": 4096}
+  },
+  ...
+]
 ```
 
-This is what the `BenchmarkHarness.time_fn()` method does. The 200-iteration default is enough to get sub-1% measurement noise on most kernels; raise to 500 or 1000 for kernels that show >2% variance.
+---
 
-## Correctness validation
+## Comparing fairly
 
-Every result in the headline table comes from a kernel that passed all five stages of the correctness harness:
+A few traps we explicitly avoid:
 
-- **Smoke test** — single small input, tight tolerance.
-- **Shape sweep** — 8+ shapes × 3 dtypes (24+ configs minimum).
-- **Numerical stability** — adversarial inputs (large magnitudes, near-zero variance, extreme dynamic range).
-- **Determinism** — 3 runs, bitwise identical outputs.
-- **Edge cases** — non-power-of-two shapes (1023, 2047, 4097).
+- **Different KV dtypes.** vLLM-ROCm at `kv_cache_dtype=auto` (fp16) vs.
+  slipstream at FP8 KV is not an apples comparison. The grid always pairs
+  matched configurations.
+- **Different prompt distributions.** Both sides see the same synthetic
+  prompts (controlled by `seed`).
+- **First-call effects.** Warmup discards the first 10 iterations.
+- **Free memory for the loser.** Each baseline is set up and torn down
+  cleanly. Held HBM between runs would advantage whoever runs second.
 
-Run the validation explicitly:
+---
 
-```bash
-pytest tests/test_kernels.py -v
-pytest tests/test_harness.py -v
-```
+## Where numbers will appear
 
-A failure in any of these is a bug. We don't report performance for kernels that don't pass.
-
-## Hardware tested
-
-The headline numbers in the README target an AMD Instinct MI300X (192GB HBM3, 5.3 TB/s, 1307 TF FP16 matrix). KVForge auto-detects the GPU via `kvforge.hardware.detect_gpu()` and looks up its specs from a built-in database covering MI300X, MI300A, MI250X, MI250, and MI210.
-
-Variation across GPUs is significant for memory-bound kernels (most of what we benchmark). On bandwidth-rich MI300X (5.3 TB/s), absolute speedups are smaller because the eager baseline is already closer to peak. On bandwidth-limited MI210 (1.6 TB/s), the gap is wider.
-
-## Reproducing the headline numbers
-
-```bash
-# Install with all extras
-pip install -e ".[triton,dev]"
-
-# 1. Profile a real model and see the kernel mix
-python -m kvforge.profile --context 2048
-
-# 2. Run the optimization loop (validates correctness, measures speedup)
-python -m kvforge.optimize --kernels rmsnorm,rope,softmax
-
-# 3. Full benchmark suite vs eager and torch.compile
-python -m kvforge.bench --kernels rmsnorm,rope,softmax --iters 500
-
-# 4. End-to-end model benchmark
-python benchmarks/end_to_end.py --model tinyllama --context 2048
-```
-
-The numbers will differ from the README depending on your GPU. The relative speedups should be in the same ballpark — within ±20% on similar-class hardware.
-
-## Known sources of variation
-
-If you're seeing wildly different numbers from the README:
-
-- **Power state.** GPUs throttle when warm. Check `rocm-smi` clocks during the run; if they're below boost, run with `rocm-smi --setsclk <max>` to lock.
-- **PCIe vs XGMI / Infinity Fabric.** Multi-GPU systems may schedule the workload across the wrong device. Set `HIP_VISIBLE_DEVICES=0` explicitly.
-- **ROCm / Triton versions.** Triton 2.2 vs 3.0 produce different kernel code for the same source. Pin versions in the install.
-- **Background load.** Other processes on the same GPU compete for SMs. Run on an idle device.
-
-## Limitations
-
-- **No multi-GPU benchmarks.** Single-device only.
-- **No long-context benchmarks.** Context lengths beyond 4096 push KV cache off-device on smaller GPUs and the bottleneck shifts to host transfer.
-- **No quantized baselines.** INT8 / INT4 / FP4 inference is increasingly common in production but isn't covered here.
-
-These are all reasonable v2 directions but not in scope for the current release.
+When the headline numbers land, they go in **README.md → Headline results**
+and a longer table in this file. Each row will link to the exact JSON dump
+and command that produced it.

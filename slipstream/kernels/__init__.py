@@ -10,9 +10,9 @@ If Triton is unavailable, the public API falls back to the reference
 implementation so unit tests still run on CPU-only machines.
 """
 
-from kvforge.kernels.rmsnorm import rmsnorm, rmsnorm_reference
-from kvforge.kernels.rope import rope, rope_reference
-from kvforge.kernels.softmax import softmax, softmax_reference
+from slipstream.kernels.rmsnorm import rmsnorm, rmsnorm_reference
+from slipstream.kernels.rope import rope, rope_reference
+from slipstream.kernels.softmax import softmax, softmax_reference
 
 __all__ = [
     "rmsnorm",

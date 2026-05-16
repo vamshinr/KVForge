@@ -1,4 +1,4 @@
-"""Numerical correctness tests for KVForge kernels.
+"""Numerical correctness tests for slipstream kernels.
 
 These tests run on CPU (eager fallback) by default and on GPU when a ROCm
 device is available. They are dtype-aware: fp16/bf16 use looser tolerances
@@ -10,9 +10,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from kvforge.kernels.rmsnorm import rmsnorm, rmsnorm_reference
-from kvforge.kernels.rope import rope, rope_reference
-from kvforge.kernels.softmax import softmax, softmax_reference
+from slipstream.kernels.rmsnorm import rmsnorm, rmsnorm_reference
+from slipstream.kernels.rope import rope, rope_reference
+from slipstream.kernels.softmax import softmax, softmax_reference
 
 
 def _tol(dtype: torch.dtype) -> tuple[float, float]:

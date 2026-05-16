@@ -35,7 +35,7 @@ except ImportError:
 
 
 def rope_reference(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    """Eager RoPE matching `kvforge.models.tinyllama.apply_rope`."""
+    """Eager RoPE matching `slipstream.models.tinyllama.apply_rope`."""
     x1 = x[..., 0::2]
     x2 = x[..., 1::2]
     rotated = torch.stack([-x2, x1], dim=-1).flatten(-2)

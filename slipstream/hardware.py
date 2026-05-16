@@ -33,16 +33,24 @@ class GPUSpec:
     peak_bw_gb_s: float
     sm_count: int = 0
     vendor: str = "amd"
+    peak_fp8_tflops: float = 0.0     # 0 means "no native FP8 MFMA"
+    hbm_gb: float = 0.0              # 0 means "unknown"
 
 
 # Specs sourced from public AMD whitepapers. Conservative values: matrix-core
-# FP16 peak with FP32 accumulate, no sparsity; FP32 is vector-pipeline peak.
+# peak with FP32 accumulate, no sparsity; FP32 is vector-pipeline peak.
+# FP8 peak is 2× FP16 peak on CDNA3 (MI300 family) via the MFMA FP8 path.
 _GPU_DATABASE: dict[str, GPUSpec] = {
-    "MI300X":   GPUSpec("AMD Instinct MI300X", "cdna3", 1307.4, 81.7, 5325.0, 304, "amd"),
-    "MI300A":   GPUSpec("AMD Instinct MI300A", "cdna3",  980.6, 61.3, 5325.0, 228, "amd"),
-    "MI250X":   GPUSpec("AMD Instinct MI250X", "cdna2",  383.0, 47.9, 3276.8, 220, "amd"),
-    "MI250":    GPUSpec("AMD Instinct MI250",  "cdna2",  362.1, 45.3, 3276.8, 208, "amd"),
-    "MI210":    GPUSpec("AMD Instinct MI210",  "cdna2",  181.0, 22.6, 1638.4, 104, "amd"),
+    "MI300X": GPUSpec("AMD Instinct MI300X", "cdna3", 1307.4, 81.7, 5325.0, 304, "amd",
+                      peak_fp8_tflops=2614.9, hbm_gb=192.0),
+    "MI300A": GPUSpec("AMD Instinct MI300A", "cdna3",  980.6, 61.3, 5325.0, 228, "amd",
+                      peak_fp8_tflops=1961.0, hbm_gb=128.0),
+    "MI250X": GPUSpec("AMD Instinct MI250X", "cdna2",  383.0, 47.9, 3276.8, 220, "amd",
+                      peak_fp8_tflops=0.0, hbm_gb=128.0),
+    "MI250":  GPUSpec("AMD Instinct MI250",  "cdna2",  362.1, 45.3, 3276.8, 208, "amd",
+                      peak_fp8_tflops=0.0, hbm_gb=128.0),
+    "MI210":  GPUSpec("AMD Instinct MI210",  "cdna2",  181.0, 22.6, 1638.4, 104, "amd",
+                      peak_fp8_tflops=0.0, hbm_gb=64.0),
 }
 
 

@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kvforge"
+name = "slipstream"
 version = "0.1.0"
-description = "Profile-guided kernel optimization for LLM inference"
+description = "Decode-optimized LLM inference path for AMD Instinct MI300X — paged FP8 KV cache, continuous batching, autotuned Triton."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [{name = "Vamshi Nagireddy"}]
-keywords = ["llm", "inference", "triton", "rocm", "kernel-optimization", "kv-cache"]
+keywords = ["llm", "inference", "decode", "triton", "rocm", "mi300x", "paged-attention", "fp8", "kv-cache"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -40,19 +40,20 @@ dev = [
     "mypy>=1.10",
     "matplotlib>=3.8",
 ]
-all = ["kvforge[triton,hf,dev]"]
+all = ["slipstream[triton,hf,dev]"]
 
 [project.scripts]
-kvforge-profile = "kvforge.profiler.cli:main"
-kvforge-optimize = "kvforge.optimizer.cli:main"
-kvforge-bench = "kvforge.bench.cli:main"
+slipstream-profile = "slipstream.profiler.cli:main"
+slipstream-autotune = "slipstream.autotune.cli:main"
+slipstream-bench = "slipstream.bench.cli:main"
+slipstream-serve = "slipstream.engine.cli:main"
 
 [project.urls]
-Repository = "https://github.com/vamshinr/kvforge"
-Issues = "https://github.com/vamshinr/kvforge/issues"
+Repository = "https://github.com/vamshinr/slipstream"
+Issues = "https://github.com/vamshinr/slipstream/issues"
 
 [tool.setuptools.packages.find]
-include = ["kvforge*"]
+include = ["slipstream*"]
 
 [tool.ruff]
 line-length = 100

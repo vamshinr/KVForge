@@ -3,7 +3,7 @@
 Three baselines per kernel:
   - eager:    pure PyTorch reference (rocBLAS / ATen).
   - compile:  `torch.compile(fn, mode='max-autotune')`.
-  - kvforge:  the optimized Triton kernel.
+  - slipstream:  the optimized Triton kernel.
 
 Each is timed with GPU events, 200 iterations, trimmed mean (drop top/bottom
 10%). Results include throughput and roofline percent-of-peak.
@@ -17,8 +17,8 @@ from typing import Callable
 
 import torch
 
-from kvforge.hardware import GPUSpec, detect_gpu
-from kvforge.optimizer.roofline import RooflineCalculator, RooflineResult
+from slipstream.hardware import GPUSpec, detect_gpu
+from slipstream.optimizer.roofline import RooflineCalculator, RooflineResult
 
 
 @dataclass
@@ -26,7 +26,7 @@ class BenchmarkResult:
     """Single (kernel, baseline, shape) measurement."""
 
     kernel: str
-    baseline: str           # 'eager' | 'compile' | 'kvforge'
+    baseline: str           # 'eager' | 'compile' | 'slipstream'
     shape: tuple[int, ...]
     dtype: torch.dtype
     runtime_us: float
@@ -41,16 +41,16 @@ class BenchmarkSuite:
     shape: tuple[int, ...]
     eager: BenchmarkResult | None = None
     compile: BenchmarkResult | None = None
-    kvforge: BenchmarkResult | None = None
+    slipstream: BenchmarkResult | None = None
     extras: dict[str, BenchmarkResult] = field(default_factory=dict)
 
     def speedup(self, vs: str = "eager") -> float | None:
-        if self.kvforge is None:
+        if self.slipstream is None:
             return None
         ref = getattr(self, vs, None)
         if ref is None:
             return None
-        return ref.runtime_us / self.kvforge.runtime_us if self.kvforge.runtime_us > 0 else None
+        return ref.runtime_us / self.slipstream.runtime_us if self.slipstream.runtime_us > 0 else None
 
 
 class BenchmarkHarness:
@@ -109,7 +109,7 @@ class BenchmarkHarness:
         shape: tuple[int, ...],
         dtype: torch.dtype,
         eager_fn: Callable[[], torch.Tensor],
-        kvforge_fn: Callable[[], torch.Tensor],
+        slipstream_fn: Callable[[], torch.Tensor],
         compile_fn: Callable[[], torch.Tensor] | None = None,
         flops: int | None = None,
         bytes_moved: int | None = None,
@@ -124,7 +124,7 @@ class BenchmarkHarness:
             self.gpu, dtype_is_fp16=(dtype in (torch.float16, torch.bfloat16))
         )
 
-        for label, fn in [("eager", eager_fn), ("compile", compile_fn), ("kvforge", kvforge_fn)]:
+        for label, fn in [("eager", eager_fn), ("compile", compile_fn), ("slipstream", slipstream_fn)]:
             if fn is None:
                 continue
             us = self.time_fn(fn)

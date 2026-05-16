@@ -14,8 +14,8 @@ from typing import Callable
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-from kvforge.profiler.amdahl import AmdahlRanker, KernelEntry
-from kvforge.profiler.classify import OpType, classify
+from slipstream.profiler.amdahl import AmdahlRanker, KernelEntry
+from slipstream.profiler.classify import OpType, classify
 
 
 @dataclass

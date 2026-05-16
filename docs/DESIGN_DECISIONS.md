@@ -1,119 +1,201 @@
 # Design Decisions
 
-This document records the major design choices in KVForge and the alternatives that were considered. It exists because in interviews and code review, the question is rarely "what does the code do?" — it's "why did you do it this way?"
+This document records the major design choices in slipstream and the
+alternatives that were considered. It exists because the question reviewers
+actually ask is rarely "what does the code do?" — it's "why did you do it
+this way?"
 
-## 1. Triton over HIP / hand-tuned assembly
+---
 
-**Choice:** All optimized kernels are written in Triton. HIP / MFMA assembly is not used.
+## 1. System-level project, not a kernel-generation system
 
-**Alternatives considered:**
-- HIP C++ via `torch.utils.cpp_extension.load_inline` (AutoKernel's approach).
-- A dual-backend system (AutoKernel ships both).
-- Writing in pure Python and relying on `torch.compile` to lower to Triton.
-
-**Reasoning:**
-- Iteration speed dominates absolute peak performance for a search loop. Triton compiles in 1–5s; HIP takes 30+s. At 40 iterations/hour vs 5/hour, the agent loop converges 8× faster.
-- For memory-bound kernels (RMSNorm, RoPE, softmax) — which is most of what KVForge optimizes — Triton routinely hits 80–95% of vendor-BLAS-equivalent throughput. The remaining gap doesn't justify the iteration penalty.
-- Single backend keeps the codebase auditable. AutoKernel's dual-backend design is impressive but doubles the surface area for bugs.
-
-**Tradeoff:** Compute-bound matmul kernels would benefit from HIP (direct matrix-core MFMA control, register-level tuning). KVForge currently delegates matmul to rocBLAS / Composable Kernel rather than competing with it; a future v2 could add a HIP backend behind the same kernel interface.
-
-## 2. Static candidate iterator vs LLM-driven generation
-
-**Choice:** The search loop accepts a static `Iterator[(label, kernel_fn)]`. There is no LLM in the loop.
+**Choice:** slipstream's contribution is the **decode-optimized system**
+around the kernels — paged FP8 KV cache, continuous batcher, autotune
+cache, and the integration that turns those into a runnable decode loop.
+We do not generate kernels; we don't even hand-write specialized variants.
 
 **Alternatives considered:**
-- Wire up Anthropic / OpenAI APIs to generate candidates AutoKernel-style.
-- Use an evolutionary algorithm (KernelFoundry's MAP-Elites approach).
-- Use reinforcement learning (contrastive RL over candidate diffs).
+- An LLM-driven kernel generator (Gimlet's kforge, Mirage, KernelBench-style).
+- A library of hand-tuned Triton kernels per shape/dtype/GPU.
+- An MLIR / custom-compiler approach.
 
 **Reasoning:**
-- The agent loop's *structure* is what matters and what's interesting to demonstrate. The choice of candidate generator is orthogonal — swap in any of the above and the rest of the framework keeps working.
-- Static iterators are deterministic and unit-testable. A test suite that depends on an external LLM API is brittle and expensive to run in CI.
-- It separates concerns: this project shows the harness, scheduler, and verification logic. A real production system would plug an LLM into the same interface.
+- Kernel-generation systems exist and are improving fast. Adding another
+  smaller version of one would be derivative.
+- Hand-tuning doesn't scale: one variant per shape per dtype per GPU
+  generation. It's exactly the failure mode kernel generators are designed
+  to replace.
+- The **system** layer above kernels (paged KV with FP8, continuous
+  batching, scheduler, engine glue) is where real production wins live on
+  AMD today, and it's much less crowded than the kernel-codegen space.
+- A system that consumes optimized kernels is **structurally complementary**
+  to systems that generate them. The two compose.
 
-**Tradeoff:** The project doesn't show end-to-end "LLM writes kernel from scratch" capability. That's a different project (and the AutoKernel paper covers it well). Adding it later is a `~200 LOC` extension to the search loop.
+**Tradeoff:** We're not the project to look at for "an LLM wrote a kernel
+from scratch." We're the project to look at for "this decode path on
+MI300X is faster end-to-end than vLLM-ROCm."
 
-## 3. Single-file kernel invariant
+---
 
-**Choice:** Each kernel lives in exactly one file (`kvforge/kernels/<name>.py`). No shared utility module for kernels.
+## 2. Parameterized Triton templates + autotune, not hand-tuned kernels
+
+**Choice:** Each kernel we own (paged attention, FP8 GEMM) is a single
+parameterized Triton template. All variation in `(BLOCK_M, BLOCK_N,
+num_warps, num_stages, GROUP_M, SPLIT_K, ...)` lives in `@triton.autotune`
+configs and is cached per `(shape_bucket, dtype, gfx_arch)` key.
 
 **Alternatives considered:**
-- Factor out common code (e.g., a `_next_power_of_two` helper) into `kvforge/kernels/common.py`.
-- Use a class hierarchy with shared `Kernel` base class.
+- Hand-tuned variants per shape (`paged_attn_b8_ctx2k_fp8.py`,
+  `paged_attn_b32_ctx8k_fp16.py`, ...).
+- `torch.compile` over the entire forward pass.
+- Pure HIP / CK extensions.
 
 **Reasoning:**
-- The agent loop's "edit one file, keep or revert" model breaks down if changes are coupled across files. Keeping each kernel self-contained means a candidate diff is always reviewable in isolation.
-- Slight code duplication (the `_next_power_of_two` helper appears in three files) is acceptable and explicit. The alternative — a `common.py` that grows over time — is the kind of utility module that becomes a dumping ground.
-- The pattern is borrowed from AutoKernel's program.md instructions, which enforce the same invariant via prompt.
+- Hand-tuning is a one-trick: tune *this* shape on *this* GPU. New shape =
+  new variant. The maintenance cost grows linearly with shape coverage.
+- Autotune is a one-time per-arch sweep. The result is a JSON cache file
+  that's portable across machines with the same arch.
+- Triton + ROCm now lowers `tl.dot` to `v_mfma_*` cleanly, so we're not
+  giving up MFMA peak by staying in Triton.
+- `torch.compile` is included as a *baseline* so we measure what Inductor's
+  autotuner gives for free. It's not our hot path because Inductor doesn't
+  know about paged KV or FP8 quantization.
 
-**Tradeoff:** Code duplication is real. If we add 10 more kernels, the boilerplate adds up. The mitigation: factor out helpers when the duplication exceeds a threshold (~5 kernels, ~30 LOC duplicated each).
+**Tradeoff:** Triton's ROCm backend has known issues with some autotune
+configs (`num_stages > 2` on gfx942 in certain templates). We pin
+known-good configs and file upstream issues rather than reaching for HIP.
 
-## 4. Roofline-guided tier selection
+---
 
-**Choice:** The roofline calculator classifies each kernel as compute-bound or memory-bound and recommends optimization tiers from a fixed playbook.
+## 3. Reference implementation paired with every kernel
+
+**Choice:** Every kernel ships paired with an eager PyTorch reference that
+runs on CPU. The reference is the correctness oracle for tests and for
+the autotune-time verification gate.
+
+**Reasoning:**
+- Triton kernels have a tight failure mode: a wrong tile-remainder mask
+  produces silently corrupted outputs. A `torch.allclose` test against an
+  obviously-correct reference catches this.
+- The reference lets the entire test suite run on CPU dev machines (and CI).
+  We don't need GPU access to test the scheduler, cache logic, FP8 quant,
+  or attention math.
+- The autotune sweep gates each candidate config on a correctness check
+  against the reference before timing — protecting us from configurations
+  that compile and run but produce wrong output.
+
+**Tradeoff:** Maintaining two implementations is friction. Mitigation: the
+reference is intentionally simple (slow, brute-force) and changes only
+when the math changes.
+
+---
+
+## 4. vLLM-compatible KV layout (block_size = 16)
+
+**Choice:** Block size is 16 by default, matching vLLM's convention.
+
+**Reasoning:**
+- During correctness work we can diff slipstream's KV cache state against
+  vLLM's block-by-block. Any layout-related bug shows up immediately.
+- vLLM picked 16 after substantial measurement — small blocks waste tail
+  capacity on short sequences, large blocks waste compute on partial
+  last-block decode. 16 balances both.
+- Tooling that operates on KV cache dumps (debug viewers, ablation scripts)
+  can be shared between projects.
+
+**Tradeoff:** If a future workload favors a different block size, it's a
+config knob — the layout machinery is parametric. Default stays at 16.
+
+---
+
+## 5. E4M3 for everything FP8
+
+**Choice:** E4M3 (4-bit exponent, 3-bit mantissa) for KV cache, GEMM
+activations, and GEMM weights.
 
 **Alternatives considered:**
-- Let the search loop blindly try all tiers in order.
-- Use a learned model to predict which tier will yield improvements.
+- E5M2 for KV (wider range, less precision).
+- Mixed: E4M3 for activations, E5M2 for KV.
 
 **Reasoning:**
-- The roofline classification is essentially free (~1µs per analysis) and provides a strong prior. Optimizing memory-bound kernels with compute-side techniques (matrix-core utilization, accumulator precision) wastes search budget.
-- The playbook is borrowed from AutoKernel and reflects real practitioner knowledge. Encoding it as data (not code) makes it inspectable.
-- A learned model is overkill for a 6-tier playbook. The handful of cases where the heuristic is wrong (e.g., a kernel sitting near the ridge point) can be handled by trying both classifications.
+- KV cache values are bounded by softmax outputs and per-token-scaled K
+  activations. Range fits comfortably in E4M3 (±448 with appropriate scaling).
+- Mantissa precision matters more than range for KV — we read those values
+  back into attention scores, and a 3-bit-mantissa-equivalent error per
+  element compounds across the full sequence.
+- One format across the project means one set of scaling utilities, one
+  test suite, one mental model.
 
-## 5. Self-contained TinyLlama vs HuggingFace dependency
+**Tradeoff:** Long-context decode with extreme outlier tokens could in
+principle benefit from E5M2 for the V cache. Per-token scaling mitigates
+this in practice; if a real workload shows degradation we'll add a
+constexpr switch.
 
-**Choice:** A self-contained TinyLlama-shaped decoder ships in `kvforge/models/tinyllama.py`. HuggingFace `transformers` is an optional extra (`pip install -e ".[hf]"`).
+---
+
+## 6. Per-token, per-head KV scaling (not per-tensor)
+
+**Choice:** FP8 KV cache uses **per-token, per-head** scales — one fp16
+scale per `(token_position, head_index)` pair.
 
 **Alternatives considered:**
-- Require `transformers` for everything.
-- Use `torch.hub` to download a pretrained checkpoint.
+- Per-tensor: one scale for the whole KV cache.
+- Per-block: one scale per 16-token block.
+- Per-element: a scale per dim (= no quantization, defeats the point).
 
 **Reasoning:**
-- Recruiters and reviewers should be able to clone the repo, `pip install`, and run the smoke tests in 5 minutes without downloading multi-gigabyte checkpoints.
-- The shape parameters (`hidden_size=2048`, `n_heads=32`, `n_kv_heads=4`, `head_dim=64`) match TinyLlama-1.1B's layer-by-layer profile. The kernel mix is identical.
-- A "tiny" mode (`build_tinyllama(tiny=True)`) shrinks the model further (vocab=1k, hidden=256) for CPU smoke tests in CI.
+- Outlier tokens kill per-tensor and per-block scaling. A single token
+  with `|x| > 100 * median` forces the scale up and crushes precision on
+  every other token in the group.
+- Per-token-per-head is the finest granularity that doesn't add overhead:
+  one fp16 scale per group, < 1% of total KV bytes for typical head_dim.
+- Quantization-aware fine-tuning literature converges on per-token scaling
+  as the best precision-cost tradeoff.
 
-**Tradeoff:** End-to-end inference benchmarks against real LLM outputs require the HF extra. This is documented in `BENCHMARKS.md`.
+---
 
-## 6. Five-stage correctness harness vs ad-hoc checks
+## 7. Continuous batching, no preemption
 
-**Choice:** Every candidate kernel must pass all five harness stages (smoke, shape sweep, stability, determinism, edge cases) before throughput is measured.
+**Choice:** The scheduler does continuous batching (mixed prefill/decode in
+each step) but does not preempt in-flight sequences when the cache is full.
+Pending requests wait.
 
 **Alternatives considered:**
-- Single `assert torch.allclose(out, out_ref)` check.
-- Continuous fuzzing during benchmark.
+- vLLM-style KV swap to host RAM.
+- Cooperative preemption (sequences yield voluntarily).
+- Recompute-on-demand prefill (drop a sequence and re-run prefill if it
+  comes back).
 
 **Reasoning:**
-- A 5× speedup on a kernel that produces wrong outputs is worse than useless. Silent numerical bugs in inference are devastating: they corrupt model output without any obvious failure signal. The harness explicitly catches each known bug class.
-- Ordering matters: cheapest checks first means failed candidates abort in <1s instead of consuming the full benchmark window.
-- The pattern is borrowed verbatim from AutoKernel — they describe in detail why each stage matters and the bug classes it catches.
+- Swap-to-host is real engineering: PCIe transfer pacing, host buffer
+  management, scheduling around the transfer. It's a Phase-5+ feature and
+  warrants its own design doc.
+- For decode workloads where requests are sized to fit the cache,
+  preemption never fires. The skeleton's behavior is correct for the
+  target workload.
+- Documenting the limitation explicitly is better than hidden complexity.
 
-**Tradeoff:** The harness adds ~30s to each iteration. For a 90-second iteration this is a 33% overhead that's unavoidable. There's no shortcut here — the bugs the harness catches are real and they happen.
+---
 
-## 7. Apache 2.0 license
+## 8. Apache 2.0 license
 
 **Choice:** Apache 2.0.
 
-**Alternatives considered:** MIT, BSD-3, GPL.
+**Reasoning:** Explicit patent grant matters for GPU kernel code that sits
+near vendor IP. De facto choice for serious infrastructure (PyTorch, vLLM,
+SGLang, Triton). Permissive enough that the code can be lifted into
+commercial products, which is the point.
 
-**Reasoning:**
-- Apache 2.0's explicit patent grant is important for a kernel optimization project. GPU kernel implementations sit close to vendor IP, and the patent grant protects users.
-- It's the de facto license for serious infrastructure projects (PyTorch, TensorFlow, vLLM, SGLang, Triton itself).
-- Permissive enough that the code can be lifted into commercial products, which is the point — the goal is to demonstrate engineering, not lock anyone in.
+---
 
-## 8. No CI on GPU
+## 9. No CI on GPU
 
-**Choice:** GitHub Actions runs the test suite on CPU only. GPU-marked tests are auto-skipped.
+**Choice:** CI runs CPU tests only. GPU-marked tests run manually before
+release.
 
-**Alternatives considered:**
-- Self-hosted GPU runner.
-- Free Colab runner via API.
-
-**Reasoning:**
-- Self-hosted GPU runners cost real money and require maintenance.
-- The CI's purpose is to catch regressions in the pure-Python code (Amdahl ranker, classifier, harness logic, roofline math). All of that is covered by the CPU test suite.
-- Kernel correctness on GPU is verified manually before each release. The kernels themselves rarely change once they pass the harness; the surrounding framework changes more often and is what CI guards.
-
-**Tradeoff:** A regression in the Triton kernel itself wouldn't be caught by CI. Mitigation: the `pytest.mark.gpu` tests must be run manually before merge, and the harness ensures any kernel that ships has passed all five validation stages.
+**Reasoning:** Self-hosted GPU runners cost real money. The CPU suite
+covers the scheduler, cache, FP8 quant math, attention reference, GEMM
+reference, autotune cache, and bench-harness logic — all the pure-Python
+substrate. Kernel correctness on real hardware is verified before each
+release; the surrounding framework changes more often and is what CI
+guards.

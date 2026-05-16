@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from kvforge.hardware import GPUSpec
-from kvforge.optimizer.roofline import RooflineCalculator
+from slipstream.hardware import GPUSpec
+from slipstream.roofline import RooflineCalculator
 
 
 @pytest.fixture

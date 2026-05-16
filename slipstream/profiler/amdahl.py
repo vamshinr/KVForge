@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from kvforge.profiler.classify import OpType
+from slipstream.profiler.classify import OpType
 
 
 @dataclass

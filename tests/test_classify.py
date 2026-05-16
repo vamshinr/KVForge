@@ -2,7 +2,7 @@
 
 import pytest
 
-from kvforge.profiler.classify import OpType, classify
+from slipstream.profiler.classify import OpType, classify
 
 
 @pytest.mark.parametrize("name,expected", [

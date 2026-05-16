@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from kvforge.profiler.amdahl import AmdahlRanker, KernelEntry
-from kvforge.profiler.classify import OpType
+from slipstream.profiler.amdahl import AmdahlRanker, KernelEntry
+from slipstream.profiler.classify import OpType
 
 
 @pytest.fixture

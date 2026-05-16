@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from kvforge.optimizer.harness import CorrectnessHarness
+from slipstream.testing.harness import CorrectnessHarness
 
 
 def _identity_inputs(shape, dtype, device):

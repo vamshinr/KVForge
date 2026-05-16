@@ -1,125 +1,229 @@
-# KVForge
+# slipstream
 
-**Profile-guided kernel optimization for LLM inference.**
+**A decode-optimized LLM inference path for AMD Instinct MI300X.**
 
-KVForge profiles a real LLM end-to-end, ranks inference-specific kernels by their contribution to total latency (Amdahl's law), and runs an iterative search loop that generates optimized Triton implementations gated by a five-stage correctness harness. Built to study where production LLM inference actually spends its time and how to claw it back.
+Paged FP8 KV cache. Continuous batching. Autotuned Triton kernels.
+Drop-in faster decode than vLLM-ROCm on Llama-3-class models.
 
-> **Status:** Research project. Targets single-GPU inference of decoder-only transformers. Not a production serving system.
+> **Status:** Foundation complete (paged KV cache, FP8 quantization, paged
+> attention reference, continuous batching scheduler, FP8 GEMM reference,
+> autotune cache, benchmark harness, baseline adapters). Triton kernel
+> templates and the Llama-3 forward path are next.
+> See [docs/PLAN.md](docs/PLAN.md) for the multi-phase plan.
 
 ---
 
 ## Why this exists
 
-Modern LLM inference is dominated by a small set of kernels: attention (paged or flash), RMSNorm, RoPE, fused softmax, and matmul. Vendor libraries cover matmul well, but the long tail of memory-bound kernels and their interaction with KV cache layout leaves significant performance on the table. Most existing kernel-search work (Korch, AutoKernel, KernelBench) treats kernels in isolation. KVForge instead:
+LLM inference serving on MI300X is leaving 30–60% of peak throughput on the
+floor today. The ROCm stack — vLLM-ROCm, Flash-Attention-ROCm, hipBLASLt —
+is **functional but substantially less tuned** than its CUDA counterpart.
+Specifically:
 
-1. **Starts from a real model** (TinyLlama-1.1B or Qwen2-0.5B) and profiles it with `torch.profiler` to get the actual kernel mix.
-2. **Ranks kernels by Amdahl impact** so optimization effort goes where it compounds.
-3. **Runs an iterative agent-style loop** (edit → correctness check → benchmark → keep/revert) over Triton candidates.
-4. **Measures KV-cache-aware metrics**: prefill TTFT, decode tokens/sec, KV cache memory pressure under varying context lengths.
+- **Decode-step attention** on ROCm runs at 30–50% of MI300X's peak HBM
+  bandwidth for production batch sizes (1–128). NVIDIA Flash-Attention-3
+  routinely hits 70–80% on H100.
+- **FP8 KV cache** is unsupported in ROCm's mainline serving path. MI300X
+  has native FP8 MFMA instructions sitting idle for KV storage.
+- **Decode-shape skinny GEMM** (M ∈ {1..128}, N = K = hidden) is a known
+  hipBLASLt weak point — 40–60% of peak on shapes that hit 80%+ on cuBLAS.
+
+slipstream is the **system** that combines five known-good ideas into a
+ROCm-native decode path that no public project ships today:
+
+1. vLLM-style **paged KV cache** with block tables
+2. **Grouped-query attention** (Llama-3 / Mistral / Mixtral)
+3. **FP8 KV cache** with per-token, per-head scales
+4. **Continuous batching** of mixed prefill/decode
+5. **Parameterized Triton templates** with offline autotune — *never* hand-
+   tuned per shape
+
+Where upstream is already strong (prefill GEMM via hipBLASLt, prefill
+attention via FA-ROCm), we call it. Where we own a kernel (decode paged
+attention with FP8 KV, FP8 decode-skinny GEMM), we write **one parameterized
+template** and let the autotuner discover the right config per shape.
+
+---
+
+## Why not just hand-tune kernels?
+
+Hand-tuning doesn't scale: one variant per shape per dtype per GPU generation.
+It's also exactly what automated kernel-generation systems (Gimlet's kforge,
+Mirage, KernelBench) exist to replace. slipstream is **structurally
+complementary** to those systems — it's the layer that consumes optimized
+kernels and produces faster end-to-end inference, not another kernel
+optimizer.
+
+If you have a kernel-generation system, slipstream is what runs the kernels.
+If you don't, slipstream's autotuner sweeps Triton's config space and caches
+the winner per `(shape_bucket, dtype, gfx_arch)` key.
 
 ---
 
 ## Headline results
 
-Measurements are next steps. Will update this section with results once ran on the hardware.
+*Coming after the Triton kernels and Llama-3 forward land. We will not
+publish numbers we can't reproduce on demand.*
+
+Success criteria the project must hit before publishing:
+
+- Llama-3-8B decode, batch 32, ctx 2048: **≥ 1.7×** tok/s vs vLLM-ROCm
+- Llama-3-8B decode, batch 1, ctx 8192: **≥ 1.5×** tok/s vs vLLM-ROCm
+- Paged-attn kernel: **≥ 75% HBM bandwidth** utilization on MI300X
+- FP8 GEMM (M=32, N=K=4096): **≥ 1.3×** hipBLASLt FP8
+- FP8 KV cache: **≤ 0.5% perplexity delta** on WikiText-2 vs FP16 KV
+
+If we miss any of these, the README says so explicitly with the actual
+number we got.
 
 ---
 
 ## Architecture
 
-KVForge operates in three main phases:
+```
+                          ┌──────────────────────┐
+                          │   slipstream-serve   │
+                          │  (CLI / lib entry)   │
+                          └──────────┬───────────┘
+                                     │
+                          ┌──────────▼───────────┐
+                          │       Engine         │   ◀── slipstream/engine
+                          │ orchestrates a step  │
+                          └──────────┬───────────┘
+                                     │
+                ┌────────────────────┼────────────────────┐
+                │                    │                    │
+        ┌───────▼──────┐     ┌───────▼───────┐    ┌───────▼─────┐
+        │  Scheduler   │     │ Llama-3 model │    │  PagedKV    │
+        │  continuous  │     │ (uses our     │    │  cache +    │
+        │  batching    │     │  primitives)  │    │  FP8 quant  │
+        └──────────────┘     └───────┬───────┘    └─────────────┘
+                                     │
+                ┌────────────────────┼────────────────────┐
+                │                    │                    │
+        ┌───────▼──────┐     ┌───────▼───────┐    ┌───────▼─────┐
+        │  Paged-attn  │     │  FP8 GEMM     │    │ RMSNorm /   │
+        │  Triton tpl  │     │  Triton tpl   │    │ RoPE Triton │
+        │  (autotuned) │     │  (autotuned)  │    │ utility ops │
+        └───────┬──────┘     └───────┬───────┘    └─────────────┘
+                │                    │
+                └──────┬─────────────┘
+                       │
+                ┌──────▼──────┐
+                │  Autotune   │   ◀── slipstream/autotune
+                │  cache JSON │       (replays winning configs)
+                └─────────────┘
+```
 
-1. **Profile**: Runs a real LLM (e.g., TinyLlama) with `torch.profiler` and ranks kernels by their contribution to end-to-end latency.
-2. **Optimize**: For each bottleneck kernel, runs an iterative search loop that generates and benchmarks Triton candidates, gated by a correctness harness.
-3. **Verify**: Replaces operations in the original model with the optimized kernels to verify end-to-end speedups and output equivalence.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component-by-component details.
+Component-level docs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Multi-phase plan: [docs/PLAN.md](docs/PLAN.md).
 
 ---
 
-## Quickstart
+## Comparison points
 
-```bash
-# Install
-pip install -e ".[dev,triton]"
+`slipstream-bench` benchmarks against every relevant baseline on the same
+workload grid:
 
-# One-shot demo: hardware report + TinyLlama profile + RMSNorm roofline
-# (~30-90s on an AMD Instinct MI300X / MI250X)
-python scripts/demo.py --context 512 --hidden 2048
-
-# Profile a model and rank its kernels
-python -m kvforge.profile --model tinyllama --context 2048
-
-# Run the optimization loop on the top-3 kernels
-python -m kvforge.optimize --kernels rmsnorm,rope,softmax --budget 50
-
-# End-to-end benchmark vs baselines
-python -m kvforge.bench --model tinyllama --compare eager,compile
-
-# Run the test suite
-pytest tests/ -v
-```
-
-### AMD (MI300X / MI250X) notes
-
-KVForge auto-detects AMD Instinct GPUs on ROCm PyTorch builds — `detect_gpu()`
-checks for `torch.version.hip` and falls back to gfx ISA names (`gfx942`,
-`gfx90a`) when the device string is generic. Upstream Triton has supported
-AMD GPUs since 2.2, so the Triton kernels run unchanged. Install with:
-
-```bash
-pip install --index-url https://download.pytorch.org/whl/rocm6.0 torch
-pip install -e ".[dev,triton]"
-python scripts/demo.py
-```
-
----
-
-## What's actually in this repo
-
-| Path | What it does |
+| Baseline | What it represents |
 |---|---|
-| `kvforge/profiler/` | `torch.profiler` wrapper, kernel classifier, Amdahl ranker |
-| `kvforge/kernels/` | Triton implementations: rmsnorm, rope, softmax, paged attention |
-| `kvforge/optimizer/` | Search loop, correctness harness, roofline calculator |
-| `kvforge/bench/` | Benchmark harness with eager / `torch.compile` / KVForge comparison |
-| `kvforge/models/` | Self-contained TinyLlama-style decoder for testing without HF deps |
-| `tests/` | Numerical correctness, determinism, edge-case shape tests |
-| `benchmarks/` | Reproducible scripts that emit the result tables in this README |
-| `docs/` | Architecture writeup, benchmark methodology, design notes |
+| **vLLM-ROCm** | Current production SoTA on MI300X |
+| **Flash-Attention-ROCm** | Best public attention kernel (CK `mha_decode`) |
+| **hipBLASLt FP16 / FP8** | Best public GEMM on AMD |
+| **torch.compile max-autotune** | Generic compiler baseline |
+
+All numbers are GPU-event timed, trimmed-mean over 30 runs after 10 warmup
+iterations.
 
 ---
 
-## Design choices worth flagging
+## Install
 
-- **Triton over hand-written HIP / assembly.** Iteration speed matters more than absolute peak performance for this kind of search. Each Triton candidate compiles in ~2 seconds; a HIP candidate takes 30+. The agent loop runs ~40 experiments/hour on Triton vs ~5/hour on HIP.
-- **Single-file kernel invariant.** Each candidate touches exactly one kernel file. Diffs stay small, reverts are clean (`git reset --hard`), and regressions are isolated.
-- **Correctness gates *before* throughput.** A 5× speedup on a kernel that produces wrong outputs is worse than useless — it silently corrupts the model. Five stages: smoke test, shape sweep across 8 configs × 3 dtypes, numerical stability under adversarial inputs, determinism (3 runs bitwise identical), non-power-of-2 edges.
-- **Roofline-guided tier selection.** The optimizer tags each kernel as compute-bound or memory-bound, then picks an optimization strategy from a tiered playbook (block sizes → memory access → compute → advanced). This is borrowed from AutoKernel; the novel piece here is applying it to inference-specific kernels with KV cache shape awareness.
+```bash
+pip install -e ".[triton,dev]"
+```
+
+Optional baseline dependencies (only needed for the comparisons you actually
+run):
+
+```bash
+pip install vllm transformers accelerate           # vllm-rocm + torch baselines
+pip install flash-attn --no-build-isolation         # flash-attention-rocm
+```
 
 ---
 
-## What this is not
+## Use
 
-- Not a vLLM or SGLang replacement. KVForge generates kernels; production serving needs continuous batching, paged attention scheduling, distributed routing, and a thousand other things.
-- Not a multi-GPU framework. Single-device only.
-- Not a training kernel optimizer. Inference shapes have very different optimization profiles than training (tall-skinny matmuls, decode is memory-bound, etc.).
+Profile a model:
+
+```bash
+slipstream-profile --model meta-llama/Meta-Llama-3-8B \
+    --mode decode --batch 8 --context 2048
+```
+
+Run autotune across the production shape grid:
+
+```bash
+slipstream-autotune --kernels all --shapes decode-suite
+slipstream-autotune --report
+```
+
+Benchmark slipstream vs every baseline:
+
+```bash
+slipstream-bench --baselines all --workload production --out results.json
+```
+
+Run a tiny end-to-end with the engine (when ready):
+
+```bash
+slipstream-serve --model meta-llama/Meta-Llama-3-8B \
+    --prompts-file prompts.txt --max-tokens 128 --fp8-kv
+```
 
 ---
 
-## Influences and prior work
+## What's deliberately not in scope
 
-- **Korch** ([Hu et al., ASPLOS '24](https://arxiv.org/abs/2406.09465)) — operator fission and BLP-based kernel orchestration. KVForge borrows the idea of treating kernel selection as a search problem but applies it to inference-specific kernels rather than training graphs.
-- **AutoKernel** ([Jaber & Jaber '26](https://arxiv.org/abs/2603.21331)) — iterative agent loop with correctness-gated benchmarking. KVForge's outer loop is structurally similar but extends the playbook with KV-cache-specific tiers.
-- **FlashAttention** ([Dao et al., NeurIPS '22](https://arxiv.org/abs/2205.14135)) — tiled online softmax. KVForge's attention kernel uses this pattern.
-- **vLLM PagedAttention** ([Kwon et al., SOSP '23](https://arxiv.org/abs/2309.06180)) — KV cache as pages. KVForge's KV layout is informed by but does not implement full paging.
+| Not built | Why |
+|---|---|
+| HTTP serving stack | Use vLLM or SGLang on top |
+| Multi-GPU (TP/PP) | Single-MI300X focus; another discipline |
+| Training kernels | Inference workload distribution is different |
+| Kernel-generation agent | Gimlet's kforge and others already do this |
+| Hand-tuned kernels per shape | Doesn't scale — autotune does it instead |
+| Prefill optimization | Already well-served by hipBLASLt + FA-ROCm |
+
+---
+
+## Repository layout
+
+```
+slipstream/
+├── attention/        Paged-attn reference + Triton template (Phase 2)
+├── gemm/             FP8 GEMM reference + Triton template (Phase 2)
+├── kvcache/          Paged cache, block table, FP8 quant/dequant
+├── scheduler/        Continuous batching
+├── engine/           End-to-end decode driver
+├── models/           Llama-3 forward path (Phase 3)
+├── autotune/         Persistent autotune cache + sweep driver
+├── bench/            Cross-baseline benchmark harness
+├── profiler/         torch.profiler wrapper + Amdahl ranker
+├── kernels/          Utility ops (RMSNorm, RoPE, softmax) — Triton
+├── testing/          Correctness harness
+├── hardware.py       GPU specs (MI300X, MI250X, ...)
+└── roofline.py       Roofline math
+docs/
+├── PLAN.md           The multi-phase project plan (read this first)
+├── ARCHITECTURE.md   Component-by-component
+├── DESIGN_DECISIONS.md
+└── BENCHMARKS.md     Reproduction protocol
+tests/                Unit tests — all CPU-runnable
+```
 
 ---
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
-
-## Author
-
-Vamshi Nagireddy [LinkedIn](https://linkedin.com/in/vamshinr) [GitHub](https://github.com/vamshinr) [Blog](https://medium.com/@vamshire)
+Apache-2.0.

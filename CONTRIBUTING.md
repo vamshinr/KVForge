@@ -1,12 +1,12 @@
-# Contributing to KVForge
+# Contributing to slipstream
 
-Thanks for your interest. KVForge is a research / portfolio project, but contributions are welcome — bug reports, kernel implementations, additional benchmarks, and documentation improvements are all useful.
+Thanks for your interest. slipstream is a research / portfolio project, but contributions are welcome — bug reports, kernel implementations, additional benchmarks, and documentation improvements are all useful.
 
 ## Development setup
 
 ```bash
-git clone https://github.com/vamshinr/kvforge
-cd kvforge
+git clone https://github.com/vamshinr/slipstream
+cd slipstream
 pip install -e ".[dev]"        # CPU dev environment
 pip install -e ".[triton,dev]" # if you have a ROCm GPU
 ```
@@ -26,25 +26,25 @@ GPU-marked tests are auto-skipped when no GPU is available.
 Run `ruff` before opening a PR:
 
 ```bash
-ruff check kvforge/ tests/
-ruff format kvforge/ tests/
+ruff check slipstream/ tests/
+ruff format slipstream/ tests/
 ```
 
 The project uses Python 3.10+ type hints. Public APIs should have docstrings.
 
 ## Adding a new kernel
 
-The pattern (modeled on `kvforge/kernels/rmsnorm.py`):
+The pattern (modeled on `slipstream/kernels/rmsnorm.py`):
 
-1. Create `kvforge/kernels/<name>.py` with three functions:
+1. Create `slipstream/kernels/<name>.py` with three functions:
    - `<name>_reference(...)` — eager PyTorch implementation.
    - `<name>(...)` — public API. Falls back to reference if Triton is unavailable.
    - `<name>_bytes(shape, dtype)` and `<name>_flops(shape)` — roofline metadata.
-2. Add it to `kvforge/kernels/__init__.py`.
+2. Add it to `slipstream/kernels/__init__.py`.
 3. Add tests in `tests/test_kernels.py` covering shape sweep, dtype sweep, edge cases, and determinism.
-4. Add it to the bench CLI registry in `kvforge/bench/cli.py`.
+4. Add it to the bench CLI registry in `slipstream/bench/cli.py`.
 
-The `CorrectnessHarness` in `kvforge/optimizer/harness.py` will validate your kernel automatically when invoked from the optimizer CLI.
+The `CorrectnessHarness` in `slipstream/optimizer/harness.py` will validate your kernel automatically when invoked from the optimizer CLI.
 
 ## Reporting bugs
 
